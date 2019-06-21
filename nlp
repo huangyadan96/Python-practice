@@ -1,0 +1,248 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Apr 27 20:02:45 2019
+
+@author: huang
+"""
+
+
+
+import numpy as np
+import pandas as pd
+import sympy
+from sympy import *
+import math
+import matplotlib.pyplot as pl
+from mpl_toolkits.mplot3d import Axes3D as ax3
+
+
+class nlp(object):
+    
+    '''
+    定义一个类
+    下降方向选择方法:'sdm':最速下降法;'nm'：牛顿法
+    步长选择方法：'a'：Armijo线性方法;'g'：黄金分割法
+    '''
+    
+    def __init__(self,function,var,initValue,directionMethod,stepLengthMethod):
+        
+        _dropDirectionMethod = ['sdm','nm',]
+        _stepLengthMethod = ['a','g',]
+        
+        if directionMethod not in _dropDirectionMethod:
+            raise ValueError('请重新输入下降方向选择方法')
+        else:
+            self.directionMethod = directionMethod
+            if directionMethod == 'nm':
+                self.stepLengthMethod = None
+            if directionMethod == 'sdm':
+                if stepLengthMethod not in _stepLengthMethod:
+                    raise ValueError('请重新输入步长选择方法')
+                else:
+                    self.stepLengthMethod = stepLengthMethod
+    
+        self.fun = function
+        self.initValue = initValue
+        self.var = var
+        self.sdm()
+    
+    
+    def sdm(self):
+        
+        '''
+        该函数为最速下降法
+        每次选择的方向为负梯度方向
+        前后选择的方向呈直角
+        该函数内调用步长选择函数
+        该函数采用的终止条件只能保证求得解是局部最优解
+        输入参数：function:function需要用sympy.symbol表示变量
+                 n:表示函数拥有多少个变量
+                 initValue:初始解(元祖形式)
+        '''
+        
+        try:
+            self.fdList = [-sympy.diff(self.fun, _var) for _var in self.var]  #对函数求导，找出对应的负梯度
+        except:
+            raise ValueError('请重新输入函数，该输入函数无法求导')
+        
+        #定义一些参数
+        flag = True
+        count = 0
+        error = 0.0001  #终止条件，梯度模长
+        a = sympy.symbols('a')  #定义步长变量
+
+        #开始循环判断（包括初始解判断）
+        value = self.initValue
+        while flag:
+            count += 1
+            self.df_value = []
+            for df_ in self.fdList:
+                replacements = zip(self.var,value)
+                self.df_value.append(df_.subs(replacements))  #此时对应的负梯度值
+            len_df = math.sqrt(np.sum([df_**2 for df_ in self.df_value]))
+            
+            if len_df <= error:  #达到终止条件
+                flag = False
+                result = lambdify(self.var,self.fun)
+                self.optimalValue = value
+                self.optimalResult = result(*value)
+                print('第%s次迭代:done!\n最优解为%s,函数最优值为%s!' % (count,self.optimalValue,self.optimalResult))
+            else:  #计算最优步长，寻找下一点
+                _directFunc = [df_*a for df_ in self.df_value]
+                _nextPoint = []
+                for i,j in zip(_directFunc,value):
+                    summ=i+j
+                    _nextPoint.append(summ)
+                replacement = zip(self.var,_nextPoint)
+                lengthFunc = self.fun.subs(replacement)  #求步长的函数
+                
+                if self.stepLengthMethod == 'g':
+                    stepLen = self.goldenSection(lengthFunc)
+                if self.stepLengthMethod == 'a':
+                    stepLen = self.armijoMethod(lengthFunc,value)
+                
+                value = value + stepLen*self.df_value  #下一个点的值
+    
+    
+    def goldenSection(self,func):
+        
+        '''该方法为黄金分割法，针对单峰函数计算步长'''
+        
+        error = 0.0001  #终止条件，搜索精度
+        a = sympy.symbols('a')  #定义步长变量
+        difFunc = sympy.diff(func,a)  #对步长函数求导
+        
+        try:
+            result = np.array(sympy.solve(difFunc,a))  #找步长函数是否有极值点
+            result.sort()
+        except:
+            raise ValueError('此时无法求得最优步长！')
+        
+        index = np.where(result>0)[0]  #步长必须大于0
+        optimalValue = []  #用来存储最优步长的列表
+        
+        if len(result) == 0 or len(index) == 0:
+            stepLength = 1  #此时无法用黄金分割法，直接赋值步长1
+        else:
+            for i in result[index]:
+                secDiff = sympy.diff(difFunc,a)
+                v = secDiff.evalf(subs = {a:i})  #求对应的二阶导
+                if v > 0:
+                    optimalValue.append(i)
+            if not len(optimalValue) > 0:  #选择步长
+                stepLength = 1  #此时无法用黄金分割法，直接赋值步长1
+            else:
+                (a,b)=[math.floor(optimalValue[0]),math.ceil(optimalValue[0])]  #此时确定了单峰区间
+                
+                #开始在区间内黄金分割，求得步长
+                r = (math.sqrt(5)-1)/2
+                a1 = b - r*(b - a)
+                b1 = a + r*(b - a)
+                v1 = func.evalf(subs = {a:a1})
+                v2 = func.evalf(subs = {a:b1})
+                
+                while abs(b-a) > error:
+                    if v1 > v2:
+                        a = a1
+                        a1 = b1
+                        v1 = v2
+                        b1 = a + r*(b-a)
+                        v2 = func.evalf(subs = {a:b1})
+                    if v1 < v2:
+                        b = b1
+                        b1 = a1
+                        v2 = v1
+                        a1 = b-r*(b-a)
+                        v1 = func.evalf(subs = {a:a1})
+                    
+                stepLength = (a+b)/2
+        
+        return stepLength
+    
+    
+    def armijoMethod(self,func,value):
+        
+        '''
+        该方法为Armijo线性方法，计算步长
+        输入参数：func:步长函数;value:此时点位置
+        '''
+        
+        #error = 0.0001  #终止条件，搜索精度
+        alpha = 0.25  #给定参数
+        p = 0.7
+        a = sympy.symbols('a')  #定义步长变量
+        difFunc = sympy.diff(func,a)  #对步长函数求导
+        
+        try:
+            result = np.array(sympy.solve(difFunc,a))  #找步长函数是否有极值点
+            result.sort()
+        except:
+            raise ValueError('此时无法求得最优步长！')
+        
+        index = np.where(result>0)[0]  #步长必须大于0
+        optimalValue = []  #用来存储最优步长的列表
+        
+        if len(result) == 0 or len(index) == 0:
+            stepLength = 1  #此时无法用黄金分割法，直接赋值步长1
+        else:
+            for i in result[index]:
+                secDiff = sympy.diff(difFunc,a)
+                v = secDiff.evalf(subs = {a:i})  #求对应的二阶导
+                if v > 0:
+                    optimalValue.append(i)
+            if len(optimalValue) > 0:  #选择步长
+                optimalValue.sort(key=abs)  #找出距离0最近的极小值点
+            
+            #开始Armijo线性搜索
+            valueBound = [math.ceil(optimalValue[0]) if optimalValue[0] >= 0 \
+                                              else math.floor(optimalValue[0])][0]
+            temp1 = func.evalf(subs = {a:valueBound})  #针对步长函数取得值
+            _result = lambdify(self.var,self.fun)
+            temp2 = _result(*value)
+            
+            if abs(valueBound) <= 1:
+                while temp2 - temp1 < alpha*valueBound*np.dot(self.df_value,self.df_value):#不满足不等式情况，需要迭代选步长
+                    valueBound = valueBound*p
+                    temp1 = func.evalf(subs = {a:valueBound})
+                stepLength = valueBound
+            else:  #这种情况先看步长1是否满足不等式
+                temp3 = func.evalf(subs = {a:1})
+                if temp2 - temp3 >= alpha*np.dot(self.df_value,self.df_value):
+                    stepLength = 1
+                else:
+                    while temp2 - temp1 < alpha*valueBound*np.dot(self.df_value,self.df_value):#不满足不等式情况，需要迭代选步长
+                        valueBound = valueBound*p
+                        temp1 = func.evalf(subs = {a:valueBound})
+                    stepLength = valueBound
+        
+        return stepLength
+        
+        
+if __name__ == '__main__':
+    
+    #定义函数及变量
+    x1,x2,x3,x4 = sympy.symbols('x1 x2 x3 x4')
+    f1 = pow(sympy.E,x1+3*x2-0.1)+pow(sympy.E,x1-3*x2-0.1)+pow(sympy.E,-x1-0.1)
+    f2 = x1-x2+2*pow(x1,2)+2*x1*x2+pow(x2,2)
+    f3 = 5*pow(x1,2)+pow(x2,2)+4*x1*x2-6*x1-4*x2+15
+    f4 = -sympy.log(1-x1-x2)-sympy.log(x1)-sympy.log(x2)
+    f5 = x1-0.6*x2+4*x3+0.25*x4 - \
+    (sympy.log(x1)+sympy.log(x2)+sympy.log(x3)+sympy.log(x4)) - \
+    sympy.log(5-x1-x2-x3-x4)
+    
+    #开始循环计算不同函数
+    function = {
+            'f1':[f1,np.array([x1,x2]),np.array([0.25,0.25]),],
+            'f2':[f2,np.array([x1,x2]),(0.25,0.25),],
+            'f3':[f3,np.array([x1,x2]),(0.25,0.25),],
+            'f4':[f4,np.array([x1,x2]),(0.25,0.25),],
+            'f5':[f5,np.array([x1,x2,x3,x4]),(0.25,0.25,0.1,0.1),],
+            }
+    
+    #记录不同函数的搜索结果
+    funcObjList=[]
+    for i in function.keys():
+        ob = nlp(function[i][0],function[i][1],function[i][2],'sdm','g')
+        funcObjList.append(ob)
+
+        
