@@ -1,0 +1,307 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Jun 22 11:00:05 2019
+
+@author: huang
+"""
+
+import math
+import sys
+from simplex import simplex_not_m,transform_sim
+import numpy as np
+import pandas as pd
+import sys
+import copy
+from queue import Queue
+from scipy.optimize import linprog
+
+
+
+class Node(object):
+    
+    '''用于遍历子问题'''
+     
+    def __init__(self,matrix=None,left=None,right=None,*args):
+        
+        self.matrix = matrix
+        self.left = left  #左子树
+        self.right = right  #右子树
+    
+    
+class ILP(object):
+    
+    def __init__(self,raw_matrix):
+        
+        self.LOWER_BOUND = -sys.maxsize
+        self.UPPER_BOUND = sys.maxsize
+        self.opt_val = None
+        self.opt_x = None
+        self.raw_matrix = raw_matrix
+        self.Q = Queue()
+        self.Q.put((raw_matrix))
+        self.numOfVar = raw_matrix.shape[1] - 2
+        self.integer_value = []  #记录整数目标值
+        self.integer_solver = []  #记录对应的解
+        
+        self.branch_and_bound()
+    
+    
+    def solver(self,raw_matrix):
+        
+        '''返回子问题的解和值'''
+        
+        input_matrix,self.is_min = transform_sim(raw_matrix)
+        tmp_result,values = simplex_not_m(input_matrix, self.is_min)
+        tmp_solver = list(values)
+        
+        return tmp_result,tmp_solver
+    
+    
+    def update_bound(self,tmp_result):
+    
+        '''根据LP的结果更新上下界'''
+        
+        if self.is_min == True:
+            self.LOWER_BOUND = tmp_result
+        elif self.is_min == False:
+            self.UPPER_BOUND = tmp_result
+
+
+    def find_var(self,tmp_solver):
+        
+        '''找出第一个不为整数的变量'''
+        
+        idx = 0  #寻找第一个不是整数的下标
+        for i,x in enumerate(tmp_solver[:self.numOfVar]):
+            if not float(x).is_integer():
+                break
+            idx += 1
+    
+        return idx
+    
+    
+    def cut_branch(self,matrix,idx,tmp_solver):
+        
+        '''
+        主要进行该子树的分支;
+        matrix:表示分支的父节点对应的矩阵；
+        idx:对应需要添加约束条件的自变量索引；
+        tmp_solver：对应父节点的解；
+        '''
+        
+        tmp_array1 = np.zeros([1,self.raw_matrix.shape[1]],np.float)
+        tmp_array2 = np.zeros([1,self.raw_matrix.shape[1]],np.float)
+        tmp_array1[0,idx] = 1
+        tmp_array2[0,idx] = 1
+        tmp_array1[0,-2:] = [math.floor(tmp_solver[idx]),1]
+        tmp_array2[0,-2:] = [math.ceil(tmp_solver[idx]),-1]
+        matrix1 = np.concatenate([tmp_array1,matrix],axis=0)
+        matrix2 = np.concatenate([tmp_array2,matrix],axis=0)
+        
+        return matrix1,matrix2
+    
+    def _initSolver(self):
+        
+        '''形成初始的问题分解'''
+        
+        
+        # 取出当前问题
+        raw_matrix = self.Q.get(block=False)
+        tmp_result,tmp_solver = self.solver(raw_matrix)
+        
+        # 若结果 x 中全为整数，则尝试更新全局下界、全局最优值和最优解
+        if all([float(i).is_integer() for i in tmp_solver[:self.numOfVar]]):
+
+            self.integer_value.append(tmp_result)
+            self.integer_solver.append(tmp_solver)
+            if self.is_min == True:
+                self.UPPER_BOUND = tmp_result
+                self.opt_val = tmp_result
+                self.opt_x = tmp_solver
+            elif self.is_min == False:
+                self.LOWER_BOUND = tmp_result
+                self.opt_val = tmp_result
+                self.opt_x = tmp_solver
+            
+        # 进行分枝
+        else:
+
+            self.update_bound(tmp_result)  #更新上下界
+            idx = self.find_var(tmp_solver)
+            
+            #构建新的约束条件(分割)
+            matrix1,matrix2 = self.cut_branch(self.raw_matrix,idx,tmp_solver)
+
+            #将新约束条件加入队列
+            tree = Node(self.raw_matrix,matrix1,matrix2)
+            self.Q.put(tree)
+            
+    
+
+    def branch_and_bound(self):
+    
+        '''
+        开始进行分支定界;
+        之后不满足整数约束条件的变量进行分支;
+        默认所有自变量都是整数，且均大于等于0;
+        广度优先遍历;
+        '''
+        
+        self._initSolver()
+        while not self.Q.empty():
+            
+            tmp_result1,tmp_result2 = [],[]  #初始化
+            tree = self.Q.get(block=False)
+            if(tree.left is not None):
+                
+                m1 = tree.left[:-2,:-1].copy()
+                symbol1 = tree.left[:-2,-1].copy()
+                for i in range(m1.shape[0]):
+                    m1[i] = m1[i]*symbol1[i]
+                if tree.left[-2,-1] == 1:
+                    c1 = tree.left[-2,:].copy() * (-1)
+                else:
+                    c1 = tree.left[-2,:].copy()
+                A_ub1 = m1[:,:-1]
+                b_ub1 = m1[:,-1]
+                A_eq,b_eq = None,None
+                r1 = linprog(c1[:A_ub1.shape[1]],A_ub1,b_ub1,A_eq,b_eq)  #用来判断是否无解
+                if r1.success:
+                    #tmp_result1,tmp_solver1 = self.solver(tree.left)
+                    tmp_result1,tmp_solver1 = r1.fun,r1.x
+            if (tree.right is not None):
+                
+                m2 = tree.right[:-2,:-1].copy()
+                symbol2 = tree.right[:-2,-1].copy()
+                for i in range(m2.shape[0]):
+                    m2[i] = m2[i]*symbol2[i]
+                if tree.right[-2,-1] == 1:
+                    c2 = tree.right[-2,:].copy() * (-1)
+                else:
+                    c2 = tree.right[-2,:].copy()
+                A_ub2 = m2[:,:-1]
+                b_ub2 = m2[:,-1]
+                A_eq,b_eq = None,None
+                r2 = linprog(c2[:A_ub2.shape[1]],A_ub2,b_ub2,A_eq,b_eq)  #用来判断是否无解
+                if r2.success:
+                    #tmp_result2,tmp_solver2 = self.solver(tree.right)
+                    tmp_result2,tmp_solver2 = r2.fun,r2.x
+            
+            flag = []  #用来标记需要剪枝的部分
+            if tmp_result1:
+            
+                if (self.is_min == True and tmp_result1 > self.UPPER_BOUND) or \
+                                (self.is_min == False and tmp_result1 < self.LOWER_BOUND):
+                    print('此时左子树需要剪枝，该枝已探明！')
+                    flag.append(1)
+                elif all([float(i).is_integer() for i in tmp_solver1[:self.numOfVar]]) \
+                                                                    and (1 not in flag):
+                    flag.append(1)
+                    self.integer_value.append(tmp_result1)
+                    self.integer_solver.append(tmp_solver1)
+                    
+                    if self.is_min:
+                        self.UPPER_BOUND = tmp_result1
+                    else:
+                        self.LOWER_BOUND = tmp_result1
+                else:  #开始分支
+                    self.update_bound(tmp_result1)  #更新上下界
+                    idx = self.find_var(tmp_solver1)
+                    
+                    #构建新的约束条件(分割)
+                    matrix1,matrix2 = self.cut_branch(tree.left,idx,tmp_solver1)
+                    
+                    #将新约束条件加入队列
+                    tree1 = Node(tree.left,matrix1,matrix2)
+                    self.Q.put(tree1)
+
+            
+            if tmp_result2:
+            
+                if (self.is_min == True and tmp_result2 > self.UPPER_BOUND) or \
+                                (self.is_min == False and tmp_result2 < self.LOWER_BOUND):
+                    print('此时右子树需要剪枝，该枝已探明！')
+                    flag.append(2)
+                elif all([float(i).is_integer() for i in tmp_solver2[:self.numOfVar]]) \
+                                                                    and (2 not in flag):
+                    flag.append(2)
+                    self.integer_value.append(tmp_result2)
+                    self.integer_solver.append(tmp_solver2)
+                    
+                    if self.is_min:
+                        self.UPPER_BOUND = tmp_result2
+                    else:
+                        self.LOWER_BOUND = tmp_result2
+                else:  #开始分支
+                    self.update_bound(tmp_result2)  #更新上下界
+                    idx = self.find_var(tmp_solver2)
+                    
+                    #构建新的约束条件(分割)
+                    matrix1,matrix2 = self.cut_branch(tree.right,idx,tmp_solver2)
+                    
+                    #将新约束条件加入队列
+                    tree2 = Node(tree.right,matrix1,matrix2)
+                    self.Q.put(tree2)
+                    
+        #此时遍历结束
+        if self.is_min:
+            #print(self.integer_value)
+            self.opt_val = min(self.integer_value)
+            _index = self.integer_value.index(min(self.integer_value))
+            self.opt_x = self.integer_solver[_index]
+        else:
+            self.opt_val = max(self.integer_value)
+            _index = self.integer_value.index(max(self.integer_value))
+            self.opt_x = self.integer_solver[_index]
+
+
+if __name__ == '__main__':
+    
+    '''
+    该方程为：
+    x1 + 2x2 <=8
+    4x1 <=16
+    4x2 <=12
+    x1,x2>=0
+    目标函数为 max z=2x1+3x2,最大值为14
+    '''
+    
+    ra_input=np.array([[1,2,8,1],
+                 [4,0,16,1],
+                 [0,4,12,1],
+                 [2,3,0,1],[1,1,0,0]])
+    
+    target1 = ILP(ra_input)
+    optResult1 = target1.opt_val
+    optSolver1 = target1.opt_x
+    
+    '''
+    该方程为：
+    x1 - x2 >= -2
+    5x1 + 6x2 <= 30
+    x1 <= 4
+    x1,x2>=0，且为整数
+    目标函数为 min z = -x1-5x2,最小值为-17
+    '''
+    
+    ra_input=np.array([[1,-1,-2,-1],
+                 [5,6,30,1],
+                 [1,0,4,1],
+                 [-1,-5,0,0],[1,1,0,0]])
+    
+    target2 = ILP(ra_input)
+    optResult2 = target2.opt_val
+    optSolver2 = target2.opt_x
+
+
+
+
+
+
+
+
+
+
+
+
+
